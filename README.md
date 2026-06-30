@@ -527,4 +527,4 @@ All `/api/*` routes have `Access-Control-Allow-Origin: *` — callable from any 
 
 ## License
 
-MIT — [github.com/JPeetz](https://github.com/JPeetz)
+MIT · Part of the [AgentForge Ecosystem](https://github.com/JPeetz/agentforge)
