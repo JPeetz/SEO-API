@@ -2,7 +2,7 @@
 
 > REST API + visual interface for SEO and GEO analysis — built for [AgentForge](https://agent-forge.co) autonomous content workflows.
 
-Deployable on Vercel in one click. All endpoints accept `POST` with `Content-Type: application/json` and return structured JSON. **No environment variables required** — all SEO and GEO algorithmic endpoints are self-contained. The GEO evaluation prompt endpoint returns a pre-built prompt your agent feeds into its own OpenRouter call — no LLM runs on this server.
+Deployable on Vercel in one click. All endpoints accept `POST` with `Content-Type: application/json` and return structured JSON. **Authentication required** — all endpoints require a Bearer token or API key. See [AUTH.md](./AUTH.md) for setup. All SEO and GEO algorithmic endpoints are self-contained. The GEO evaluation prompt endpoint returns a pre-built prompt your agent feeds into its own OpenRouter call — no LLM runs on this server.
 
 ---
 
@@ -16,6 +16,31 @@ npm run dev
 
 # Deploy to Vercel
 npx vercel --prod
+```
+
+---
+
+## Authentication
+
+**All endpoints require authentication.** Provide either:
+
+1. **Bearer Token** — `Authorization: Bearer <your-jwt-token>`
+2. **API Key** — `X-API-Key: <your-api-key>`
+
+Requests without authentication return `401 Unauthorized`. See [AUTH.md](./AUTH.md) for full setup guide, token generation, and examples.
+
+```bash
+# Example with Bearer token
+curl -X POST https://api.example.com/api/seo/roi \
+  -H "Authorization: Bearer eyJhbGc..." \
+  -H "Content-Type: application/json" \
+  -d '{"searchVolume": 5000, "position": 3, ...}'
+
+# Example with API key
+curl -X POST https://api.example.com/api/seo/roi \
+  -H "X-API-Key: your-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"searchVolume": 5000, "position": 3, ...}'
 ```
 
 ---
@@ -36,7 +61,7 @@ npx vercel --prod
 | GEO | `/api/geo/eeat-signals` | Algorithmic | E-E-A-T marker detection |
 | GEO | `/api/geo/evaluation-prompt` | Prompt builder | Returns prompts for your agent's LLM — no server LLM call |
 
-All errors return `{ "error": "message" }` with HTTP 400.
+All errors return `{ "error": "message" }` with appropriate HTTP status (400 for validation, 401 for auth, 500 for server error).
 
 ---
 

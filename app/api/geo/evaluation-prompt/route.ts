@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { validateAuth } from '@/lib/auth';
 import { buildEvaluationPrompt, analyzeEntityDensity, analyzeAnswerStructure, analyzeQuotability, analyzeEEAT } from '@/lib/geo-utils';
 
 export async function POST(req: NextRequest) {
+  const auth = validateAuth(req);
+  if (!auth.valid) return auth.response!;
   try {
     const body = await req.json();
     const { content, targetQuery, includeSignals = true } = body;

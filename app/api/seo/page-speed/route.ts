@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { calculatePageSpeed } from '@/lib/seo-utils';
+import { validateAuth } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
+  const auth = validateAuth(req);
+  if (!auth.valid) return auth.response!;
+
   try {
     const body = await req.json();
     const { lcp, fid, cls, pageSize, httpRequests, ttfb } = body;

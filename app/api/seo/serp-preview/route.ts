@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { validateAuth } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
+  const auth = validateAuth(req);
+  if (!auth.valid) return auth.response!;
+
   try {
     const body = await req.json();
     const { url, title, description } = body;
