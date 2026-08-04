@@ -484,3 +484,156 @@ Return this exact JSON structure:
 
   return { systemPrompt, userPrompt, expectedOutputSchema, tokensEstimate };
 }
+
+// ── AEO — Answer Engine Optimization ────────────────────────────
+
+export interface SchemaAnalysisResult {
+  hasSchema: boolean;
+  schemaTypes: string[];
+  valid: boolean;           // JSON-LD parseable + required fields
+  faqQuestionCount: number; // Questions inside FAQPage/QA schema
+  score: number;            // 0-100
+  issues: string[];
+}
+
+export function analyzeSchema(content: string): SchemaAnalysisResult {
+  const blocks = content.match(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  const issues: string[] = [];
+  let hasSchema = false;
+  let faqQuestionCount = 0;
+  const schemaTypes: string[] = [];
+  let valid = false;
+  let jsonLdCount = 0;
+
+  for (const block of blocks) {
+    const raw = block.replace(/<script[^>]*>/i, '').replace(/<\/script>/i, '').trim();
+    try {
+      const parsed = JSON.parse(raw);
+      jsonLdCount++;
+      hasSchema = true;
+      const type = Array.isArray(parsed['@type']) ? parsed['@type'][0] : parsed['@type'];
+      if (type) schemaTypes.push(String(type));
+      if (String(type) === 'FAQPage' || String(type) === 'QAPage') {
+        const mainEntity = parsed['mainEntity'] || [];
+        const entities = Array.isArray(mainEntity) ? mainEntity : [mainEntity];
+        faqQuestionCount += entities.filter((e: any) => e && (e['@type'] === 'Question' || (e['@type'] as any) === undefined)).length;
+      }
+    } catch {
+      issues.push('One or more JSON-LD blocks is not valid JSON');
+    }
+  }
+
+  if (!hasSchema) {
+    issues.push('No JSON-LD schema found — add FAQPage or QAPage');
+  } else {
+    const hasFaq = schemaTypes.includes('FAQPage') || schemaTypes.includes('QAPage');
+    valid = jsonLdCount > 0 && (hasFaq || schemaTypes.includes('Article'));
+    if (!hasFaq) issues.push('Schema present but no FAQPage/QAPage type — use FAQPage for AEO');
+    if (hasFaq && faqQuestionCount === 0) issues.push('FAQPage present but no Question entries found');
+  }
+
+  let score = 0;
+  if (hasSchema) score += 40;
+  if (valid) score += 20;
+  if (schemaTypes.includes('FAQPage') || schemaTypes.includes('QAPage')) score += 25;
+  if (faqQuestionCount > 0) score += Math.min(15, faqQuestionCount * 5);
+  if (issues.length === 0) score += 10;
+  score = Math.round(Math.min(100, score));
+
+  return { hasSchema, schemaTypes, valid, faqQuestionCount, score, issues };
+}
+
+export interface QAPairingResult {
+  questionCount: number;
+  pairedCount: number;
+  adjacencyScore: number;   // 0-100
+  unpaired: string[];
+}
+
+export function analyzeQAPairing(content: string): QAPairingResult {
+  // Split keeping sentence-ending punctuation so question clauses keep their '?'
+  const clauses = content.split(/(?<=[.!?])\s*/).map(c => c.trim()).filter(c => c.length > 0);
+  let questionCount = 0;
+  let pairedCount = 0;
+  const unpaired: string[] = [];
+
+  for (let i = 0; i < clauses.length; i++) {
+    if (!/\?/.test(clauses[i])) continue;
+    questionCount++;
+    const nxt = clauses[i + 1] || '';
+    const window = clauses.slice(i + 1, i + 4).join(' ');
+    const isList = /^\s*[-*]\s/.test(nxt);
+    if (/a:|the answer is|answer:|yes,|no,|it depends|that depends|because|it is|that is/i.test(window) || isList) {
+      pairedCount++;
+    } else {
+      unpaired.push(clauses[i].slice(0, 60));
+    }
+  }
+
+  const adjacencyScore = questionCount > 0
+    ? Math.round((pairedCount / questionCount) * 100)
+    : 0;
+
+  return { questionCount, pairedCount, adjacencyScore, unpaired };
+}
+
+export interface DirectAnswerResult {
+  hasDirectAnswer: boolean;
+  answerPreview: string;
+  wordCount: number;
+  score: number;            // 0-100
+}
+
+export function analyzeDirectAnswerBlock(content: string): DirectAnswerResult {
+  // Look at the first 2 sentences after the H1 for a concise declarative answer.
+  const h1Match = content.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const bodyAfterH1 = h1Match ? content.slice(h1Match.index! + h1Match[0].length) : content;
+  const sentences = getSentences(bodyAfterH1).slice(0, 2).join(' ');
+  const wordCount = getWords(sentences).length;
+  const isQuestion = /\?/.test(bodyAfterH1.split(/[.!?]+/)[0] || '');
+
+  const isDeclarative = !isQuestion && wordCount >= 8 && wordCount <= 60;
+  const hasDirectAnswer = isDeclarative;
+
+  let score = 0;
+  if (hasDirectAnswer) score += 60;
+  if (wordCount >= 10 && wordCount <= 60) score += 20;
+  if (!isQuestion) score += 10;
+  if (/\b(because|is|are|the|best|most)\b/i.test(sentences)) score += 10;
+  score = Math.round(Math.min(100, score));
+
+  return { hasDirectAnswer, answerPreview: sentences.slice(0, 200), wordCount, score };
+}
+
+export interface AEOScoreResult {
+  composite: number;                 // 0-100
+  rating: 'poor' | 'moderate' | 'good' | 'excellent';
+  dimensions: {
+    schema: number;
+    qaPairing: number;
+    directAnswer: number;
+  };
+  gaps: string[];
+}
+
+export function buildAEOScore(content: string): AEOScoreResult {
+  const schema = analyzeSchema(content);
+  const qa = analyzeQAPairing(content);
+  const direct = analyzeDirectAnswerBlock(content);
+
+  const dimensions = {
+    schema: schema.score,
+    qaPairing: qa.adjacencyScore,
+    directAnswer: direct.score,
+  };
+  const composite = Math.round((dimensions.schema + dimensions.qaPairing + dimensions.directAnswer) / 3);
+  const rating: AEOScoreResult['rating'] =
+    composite >= 80 ? 'excellent' : composite >= 60 ? 'good' : composite >= 40 ? 'moderate' : 'poor';
+
+  const gaps: string[] = [];
+  if (schema.score < 60) gaps.push(...schema.issues);
+  if (qa.adjacencyScore < 60) gaps.push('Some questions lack an answer in close proximity — tighten Q/A pairing');
+  if (direct.score < 60) gaps.push('No concise direct answer block under the H1 — add one');
+
+  return { composite, rating, dimensions, gaps };
+}
