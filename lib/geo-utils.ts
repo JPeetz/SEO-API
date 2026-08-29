@@ -637,3 +637,124 @@ export function buildAEOScore(content: string): AEOScoreResult {
 
   return { composite, rating, dimensions, gaps };
 }
+
+// ── Crowd-sourced from geo-seo-claude (MIT) — block-level AI citability scorer ──
+export interface CitabilityDimension {
+  answer_block_quality: number;
+  self_containment: number;
+  structural_readability: number;
+  statistical_density: number;
+  uniqueness_signals: number;
+}
+export interface CitabilityBlock {
+  heading: string | null;
+  word_count: number;
+  total_score: number;
+  grade: 'A' | 'B' | 'C' | 'D' | 'F';
+  label: string;
+  breakdown: CitabilityDimension;
+  preview: string;
+}
+export interface CitabilityResult {
+  blocks_analyzed: number;
+  average_citability: number;
+  grade_distribution: Record<string, number>;
+  optimal_length_blocks: number;
+  best_block: CitabilityBlock | null;
+  worst_block: CitabilityBlock | null;
+  all_blocks: CitabilityBlock[];
+}
+
+function splitBlocks(content: string): Array<{ heading: string | null; text: string }> {
+  const blocks: Array<{ heading: string | null; text: string }> = [];
+  let curHeading: string | null = null;
+  let paras: string[] = [];
+  for (const line of content.split('\n')) {
+    const s = line.trim();
+    if (/^#{1,4}\s/.test(s)) {
+      if (paras.length) blocks.push({ heading: curHeading, text: paras.join(' ') });
+      curHeading = s.replace(/^#+\s*/, '');
+      paras = [];
+    } else if (s) paras.push(s);
+  }
+  if (paras.length) blocks.push({ heading: curHeading, text: paras.join(' ') });
+  return blocks.filter(b => b.text.split(/\s+/).length >= 20);
+}
+
+function scorePassageText(text: string, heading: string | null): CitabilityBlock {
+  const words = text.split(/\s+/);
+  const wordCount = words.length;
+  const sentences = text.split(/[.!?]+/).filter(Boolean);
+
+  // 1) Answer block quality (30)
+  let abq = 0;
+  if (/(\w+\s+is\s+(?:a|an|the)\s|\w+\s+refers?\s+to\s|\w+\s+means?\s)/i.test(text)) abq += 15;
+  const first60 = words.slice(0, 60).join(' ');
+  if (/(\b(?:is|are|was|means?|refers?)\b|\d+%|\$\d|\d+\s+(?:million|billion|thousand))/i.test(first60)) abq += 15;
+  if (heading && heading.trim().endsWith('?')) abq += 10;
+  const clear = sentences.filter(s => { const n = s.split(/\s+/).length; return n >= 5 && n <= 25; }).length;
+  if (sentences.length) abq += Math.round((clear / sentences.length) * 10);
+  if (/(according to|research shows|studies?\s+(show|indicate|suggest|found)|data\s+(shows|indicates))/i.test(text)) abq += 10;
+  abq = Math.min(abq, 30);
+
+  // 2) Self-containment (25)
+  let sc = 0;
+  if (wordCount >= 134 && wordCount <= 167) sc += 10;
+  else if (wordCount >= 100 && wordCount <= 200) sc += 7;
+  else if (wordCount >= 80 && wordCount <= 250) sc += 4;
+  else if (!(wordCount < 30 || wordCount > 400)) sc += 2;
+  const pronouns = (text.match(/\b(?:it|they|them|their|this|that|these|those|he|she|his|her)\b/ig) || []).length;
+  if (wordCount) {
+    const ratio = pronouns / wordCount;
+    if (ratio < 0.02) sc += 8; else if (ratio < 0.04) sc += 5; else if (ratio < 0.06) sc += 3;
+  }
+  const proper = (text.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g) || []).length;
+  if (proper >= 3) sc += 7; else if (proper >= 1) sc += 4;
+  sc = Math.min(sc, 25);
+
+  // 3) Structural readability (20)
+  let sr = 0;
+  if (sentences.length) {
+    const avg = wordCount / sentences.length;
+    if (avg >= 10 && avg <= 20) sr += 8; else if (avg >= 8 && avg <= 25) sr += 5; else sr += 2;
+  }
+  if (/(first|second|third|finally|additionally|moreover|furthermore)/i.test(text)) sr += 4;
+  if (/(\d+[\.\)]\s|\b(?:step|tip|point)\s+\d+)/i.test(text)) sr += 4;
+  if (text.includes('\n')) sr += 4;
+  sr = Math.min(sr, 20);
+
+  // 4) Statistical density (15)
+  let sd = 0;
+  sd += Math.min((text.match(/\d+(?:\.\d+)?%/g) || []).length * 3, 6);
+  sd += Math.min((text.match(/\$[\d,]+/g) || []).length * 3, 5);
+  sd += Math.min((text.match(/\b\d+(?:,\d{3})*(?:\.\d+)?\s+(users|customers|pages|sites|companies|businesses|people|percent|times)\b/i) || []).length * 2, 4);
+  if (/\b20(?:2[3-6]|1\d)\b/.test(text)) sd += 2;
+  if (/(according to\s+[A-Z]|Gartner|Forrester|McKinsey|Harvard|Stanford|MIT|Google|Microsoft|OpenAI|Anthropic)/i.test(text)) sd += 2;
+  sd = Math.min(sd, 15);
+
+  // 5) Uniqueness signals (10)
+  let us = 0;
+  if (/(our\s+(research|study|data|analysis|survey|findings)|we\s+(found|discovered|analyzed|surveyed))/i.test(text)) us += 5;
+  if (/(case study|for example|for instance|in practice|real-world|hands-on)/i.test(text)) us += 3;
+  if (/(using|with|via|through)\s+[A-Z][a-z]+/.test(text)) us += 2;
+  us = Math.min(us, 10);
+
+  const total = abq + sc + sr + sd + us;
+  const grade: CitabilityBlock['grade'] = total >= 80 ? 'A' : total >= 65 ? 'B' : total >= 50 ? 'C' : total >= 35 ? 'D' : 'F';
+  const label = { A: 'Highly Citable', B: 'Good Citability', C: 'Moderate', D: 'Low', F: 'Poor' }[grade];
+  return { heading, word_count: wordCount, total_score: total, grade, label,
+    breakdown: { answer_block_quality: abq, self_containment: sc, structural_readability: sr, statistical_density: sd, uniqueness_signals: us },
+    preview: words.slice(0, 25).join(' ') + (wordCount > 25 ? '...' : '') };
+}
+
+export function analyzeCitability(content: string): CitabilityResult {
+  const blocks = splitBlocks(content).map(b => scorePassageText(b.text, b.heading));
+  if (!blocks.length) return { blocks_analyzed: 0, average_citability: 0, grade_distribution: {}, optimal_length_blocks: 0, best_block: null, worst_block: null, all_blocks: [] };
+  const avg = Math.round((blocks.reduce((a, b) => a + b.total_score, 0) / blocks.length) * 10) / 10;
+  const dist: Record<string, number> = {};
+  for (const b of blocks) dist[b.grade] = (dist[b.grade] || 0) + 1;
+  const optimal = blocks.filter(b => b.word_count >= 134 && b.word_count <= 167).length;
+  const sorted = [...blocks].sort((a, b) => a.total_score - b.total_score);
+  return { blocks_analyzed: blocks.length, average_citability: avg, grade_distribution: dist,
+    optimal_length_blocks: optimal, best_block: sorted[sorted.length - 1], worst_block: sorted[0], all_blocks: blocks };
+}

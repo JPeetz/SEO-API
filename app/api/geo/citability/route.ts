@@ -1,0 +1,17 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { validateAuth } from '@/lib/auth';
+import { analyzeCitability } from '@/lib/geo-utils';
+
+export async function POST(req: NextRequest) {
+  const auth = validateAuth(req);
+  if (!auth.valid) return auth.response!;
+  try {
+    const { content } = await req.json();
+    if (!content || typeof content !== 'string')
+      return NextResponse.json({ error: '`content` (string) is required' }, { status: 400 });
+    return NextResponse.json({ success: true, data: analyzeCitability(content) });
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+}
+export async function OPTIONS() { return new NextResponse(null, { status: 204 }); }
